@@ -1,0 +1,376 @@
+package com.criconline.server;
+
+import com.criconline.actions.Action;
+import java.util.logging.Logger;
+import com.criconline.models.PlayerModel;
+import com.golconda.common.message.GameEvent;
+import com.golconda.common.message.Response;
+import com.golconda.common.message.ResponsePlayerShift;
+import com.criconline.actions.*;
+import com.criconline.ServerMessagesListener;
+import com.cricket.mmog.cric.util.ActionConstants;
+import java.util.TimerTask;
+import java.util.Timer;
+import java.util.Vector;
+import com.criconline.TournyMessagesListener;
+import com.cricket.mmog.cric.util.MoveParams;
+import com.golconda.common.message.Command;
+
+public class ServerEventPlugin extends EventGenerator implements Runnable,
+    ActionConstants {
+  static Logger _cat = Logger.getLogger(EventGenerator.class.getName());
+  static int _gid = 1;
+  static int _grid = 1000;
+  Vector _delay;
+  Vector _ge;
+  public int _play;
+
+  public ServerEventPlugin() {
+    ActionFactory af;
+    // create a action registry entry
+    af = new ActionFactory(this, 1);
+    _action_registry.put("" + 1, af);
+    Timer t = new Timer();
+    t.schedule(new ActionProcessor(), 0, 500);
+    _ge = new Vector();
+    _delay = new Vector();
+    _play = FIELD;
+    if (_play == BAT) {
+      _name = "abhido";
+    }
+    else if (_play == BOWL) {
+      _name = "comp1";
+    }
+    else if (_play == FIELD) {
+      _name = "comp1";
+    }
+    else {
+      _name = "comp6";
+    }
+  }
+
+  public void addWatchOnTable(int tid, ServerMessagesListener changesListener) {
+    addServerMessageListener(tid, changesListener);
+    if (_play == -1) {
+      String sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,pot=20,state=4,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," +
+                   "fielding=0|Tigers|comp1|1048576|1|0|0|0|0`1|Tigers|comp2|1048576|1|0|0|0|0`2|Tigers|comp3|1048576|1|0|0|0|0," +
+                   "batting=0|Eagles|abhido|1048576|1|0|0|0|0,";
+      sge += "md=,next-move=-1|none|none|wait|5,last-move=1|Tigers|comp2|join|0.00,,tp=5|Tigers";
+      GameEvent ge = new GameEvent();
+      ge.init(sge);
+
+      processGameEvent(ge, 500);
+
+      String com_sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," + "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                       "batting=0|Eagles|abhido|1073741825|1|0|0|0|0,";
+      sge = com_sge + ",md=,next-move=0|Tigers|comp1|bowl|0.00,,tp=5|Tigers";
+
+      ge = new GameEvent();
+      ge.init(sge);
+      processGameEvent(ge, 2000);
+
+
+      sge = com_sge + ",md=bowl|8|14|2333|4|4|0|6|0,last-move=0|Tigers|comp1|bowl|5,next-move=0|Eagles|abhido|bat|0.00,,tp=5|Tigers";
+
+      ge = new GameEvent();
+      ge.init(sge);
+      processGameEvent(ge, 6000);
+
+      sge = com_sge + ",next-move=1|Tigers|comp2|field|5,tp=5|Tigers,last-move=0|Eagles|abhido|bat|5,md=bat|10|2333|14|4|4|0|6|0,";
+      ge = new GameEvent();
+      ge.init(sge);
+      tid = ge.getGameId();
+
+      processGameEvent(ge, 8000);
+
+      sge = com_sge +
+            "last-move=1|Tigers|comp2|field|5,md=field|10|8|2333|4|4|0|6|0,";
+      ge = new GameEvent();
+      ge.init(sge);
+      tid = ge.getGameId();
+
+      processGameEvent(ge, 10000);
+
+      sge = com_sge + ",next-move=0|Tigers|comp1|bowl|5,tp=5|Tigers";
+      ge = new GameEvent();
+      ge.init(sge);
+      tid = ge.getGameId();
+
+      processGameEvent(ge, 30000);
+
+      sge = com_sge + ",md=,next-move=0|Eagles|abhido|bat|5,last-move=0|Tigers|comp1|bowl|0.00,,tp=5|Tigers";
+
+      ge = new GameEvent();
+      ge.init(sge);
+      tid = ge.getGameId();
+
+      processGameEvent(ge, 38000);
+
+
+    }
+  }
+
+  public void addWatchOnTourny(int tid, TournyMessagesListener changesListener){
+
+  }
+
+  public void joinTable(int tid, int pos, String team, double value) {
+    _cat.finest("Joining gid=" + tid + ", grid=" + _grid + ", pos=" + pos +
+               ", team=" + team);
+    _grid = -1;
+    if (_play == -1) {
+      return;
+    }
+
+    String sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=4,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," +
+                 "fielding=0|Tigers|comp1|1048576|1|0|0|0|0`1|Tigers|comp2|1048576|1|0|0|0|0`2|Tigers|comp3|1048576|1|0|0|0|0," +
+                 "batting=0|Eagles|abhido|1048576|1|0|0|0|0,";
+    if (_play == BAT) {
+      sge += "md=,next-move=0|Tigers|comp1|bowl|5,last-move=0|Eagles|abhido|join|0.00,,tp=0|Eagles";
+    }
+    else if (_play == BOWL) {
+      sge += "md=,next-move=-1|none|none|wait|5,last-move=0|Tigers|comp1|join|0.00,,tp=0|Tigers";
+    }
+    else if (_play == FIELD) {
+      sge += "md=,next-move=-1|none|none|wait|5,last-move=2|Tigers|comp3|join|0.00,,tp=2|Tigers";
+    }
+
+    GameEvent ge = new GameEvent();
+    ge.init(sge);
+
+    processGameEvent(ge, 500);
+
+
+    sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," + "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+          "batting=0|Eagles|abhido|1073741825|1|0|0|0|0,";
+    if (_play == BAT) {
+      sge += ",md=bowl|7|8|2333|8|4|0|3|0,next-move=0|Eagles|abhido|bat|5,last-move=0|Tigers|comp1|bowl|0.00,,tp=0|Eagles";
+    }
+    else if (_play == BOWL) {
+      sge += "md=,next-move=0|Tigers|comp1|bowl|5,last-move=0|Tigers|comp1|join|0.00,,tp=0|Tigers";
+    }
+    else if (_play == FIELD) {
+      sge += ",md=bowl|7|8|2333|8|4|0|3|0,next-move=0|Eagles|abhido|bat|5,last-move=2|Tigers|comp3|bowl|0.00,,tp=2|Tigers";
+    }
+    ge = new GameEvent();
+    ge.init(sge);
+    processGameEvent(ge, 2000);
+
+
+    if (_play == FIELD) {
+
+      sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," +
+            "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+            "batting=0|Eagles|abhido|1073741825|1|0|0|0|0,";
+
+      sge += ",md=bat|8|3|2333|4|5.3|0|3|0,last-move=0|Eagles|abhido|bat|5,next-move=2|Tigers|comp3|field|0.00,,tp=2|Tigers";
+    ge = new GameEvent();
+    ge.init(sge);
+    processGameEvent(ge, 8000);
+
+    }
+
+
+  }
+
+  public void sendToServer(Command c){
+  }
+
+  public void sendToServer(int tid, Action o) {
+    _cat.finest("Game=" + tid + ", action=" + o);
+    if (o instanceof MoveAction) {
+      MoveAction ba = (MoveAction) o;
+      MoveParams mp = ba.getMoveParams();
+      switch (ba.getId()) {
+        case BOWL:
+          String sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,pot=20,state=8,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," + "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                       "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+                       ",last-move=0|Tigers|comp1|bowl|5,md=" +
+                       mp.stringValue() + ",next-move=0|Eagles|abhido|bat|5,,tp=0|Tigers";
+          GameEvent ge = new GameEvent();
+          ge.init(sge);
+
+          processGameEvent(ge, 1000);
+
+          mp = MoveParams.generate(MoveParams.BATS);
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," + "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+                ",last-move=0|Eagles|abhido|bat|5,md=" +
+                mp.stringValue() + ",next-move=1|Tigers|comp2|field|5,,tp=0|Tigers";
+          ge = new GameEvent();
+          ge.init(sge);
+
+          processGameEvent(ge, 1100);
+
+          ResponsePlayerShift rps = new ResponsePlayerShift(_gid, "LF1", 5, 0);
+          processPlayerShift(rps, 1220);
+          rps = new ResponsePlayerShift(_gid, "LF1", 40, 0);
+          processPlayerShift(rps, 1520);
+          rps = new ResponsePlayerShift(_gid, "LF1", 20, 0);
+          processPlayerShift(rps, 4020);
+          rps = new ResponsePlayerShift(_gid, "LF1", 20, 0);
+          processPlayerShift(rps, 4520);
+          rps = new ResponsePlayerShift(_gid, "LF1", 20, 0);
+          processPlayerShift(rps, 5020);
+
+          mp = MoveParams.generate(MoveParams.FIELD);
+          mp.setX(310);
+          mp.setY(200);
+          //next-move=-1|none|none|wait|5
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," +
+                "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+                ",last-move=1|Tigers|comp2|field|5,md=" + mp.stringValue() + ",next-move=-1|none|none|wait|5,tp=0|Tigers";
+          ge = new GameEvent();
+          ge.init(sge);
+
+          processGameEvent(ge, 10000);
+
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," + "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+              "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+              ",next-move=0|Tigers|comp1|bowl|5,,tp=0|Tigers";
+        ge = new GameEvent();
+        ge.init(sge);
+
+        processGameEvent(ge, 20000);
+
+
+          break;
+        case BAT: // END
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," +
+                "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+                "md=bowl|8|4|2333|4|0|6|0,next-move=1|Tigers|comp2|field|5,tp=0|Eagles" +
+                "last-move=0|Eagles|abhido|bat|5,md=" +
+                mp.stringValue();
+          ge = new GameEvent();
+          ge.init(sge);
+          tid = ge.getGameId();
+
+          processGameEvent(ge, 4000);
+
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," + "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+                "md=bowl|8|4|2333|4|0|6|0,tp=0|Eagles" +
+                "last-move=1|Tigers|comp2|field|5,md=field|10|8|4|4|0|6|0,";
+          ge = new GameEvent();
+          ge.init(sge);
+          tid = ge.getGameId();
+
+          processGameEvent(ge, 5000);
+
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," +
+                "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+                ",next-move=0|Tigers|comp1|bowl|5,tp=0|Eagles";
+          ge = new GameEvent();
+          ge.init(sge);
+          tid = ge.getGameId();
+
+          processGameEvent(ge, 8000);
+
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," + "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+                ",md=bowl|7|8|2333|8|4|0|3|0,next-move=0|Eagles|abhido|bat|5,last-move=0|Tigers|comp1|bowl|0.00,,tp=0|Eagles";
+
+          ge = new GameEvent();
+          ge.init(sge);
+          tid = ge.getGameId();
+
+          processGameEvent(ge, 10000);
+          break;
+
+        case FIELD:
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," +
+              "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                "batting=0|Eagles|abhido|1073741825|1|0|0|0|0,";
+
+          sge += ",md=field|8|14|2333|4|4|0|6|0,last-move=0|Tigers|comp1|field|5,next-move=1|Tigers|comp2|bowl|0.00,,tp=2|Tigers";
+
+          ge = new GameEvent();
+          ge.init(sge);
+          processGameEvent(ge, 6000);
+
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," +
+              "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+                ",md=bowl|8|14|2333|4|4|0|6|0,next-move=0|Eagles|abhido|bat|5,last-move=1|Tigers|comp2|bowl|0.00,,tp=2|Tigers";
+
+          ge = new GameEvent();
+          ge.init(sge);
+          tid = ge.getGameId();
+          processGameEvent(ge, 16000);
+
+          sge = "id=" + _gid + ",grid=" + _grid + ",name=Warm Up,type=16,state=8,pot=20,fees=5,buyin=10,runs=0,A=Eagles,B=Tigers,balls=0," +
+              "fielding=0|Tigers|comp1|2|1|0|0|0|0`1|Tigers|comp2|4|1|0|0|0|0`2|Tigers|comp3|8|1|0|0|0|0," +
+                "batting=0|Eagles|abhido|1073741825|1|0|0|0|0," +
+                ",md=bat|8|3|2333|4|1.8|0|3|0,next-move=2|Tigers|comp3|field|5,last-move=0|Eagles|abhido|bat|0.00,,tp=2|Tigers";
+//md=bat|8|3|2333|4|5.3|0|3|0
+//md=bat|8|3|2333|4|5.8|0|3|0
+          ge = new GameEvent();
+          ge.init(sge);
+          tid = ge.getGameId();
+          processGameEvent(ge, 20000);
+
+          break;
+        default:
+          _cat.finest("Unknown move received from the client" + ba);
+      }
+    }
+    else if (o instanceof ChatAction) {
+      ChatAction ca = (ChatAction) o;
+      fireServerMessagesEvent(tid, ca);
+    }
+  }
+
+  public void run() {
+    try {
+      long del = Long.parseLong((String) _delay.remove(0));
+      Object o = _ge.remove(0);
+      if (o instanceof GameEvent){
+        GameEvent ge = (GameEvent)o;
+        Thread.currentThread().sleep(del);
+        _cat.finest(ge);
+        int tid = ge.getGameId();
+        ActionFactory af = getActionFactory(tid);
+        af.processGameEvent(ge, Response.R_MOVE);
+      }
+      else if (o instanceof ResponsePlayerShift){
+        ResponsePlayerShift ge = (ResponsePlayerShift)o;
+        Thread.currentThread().sleep(del);
+        _cat.finest(ge);
+        int tid = ge.getGid();
+        ActionFactory af = getActionFactory(tid);
+        af.processPlayerShift(ge);
+      }
+    }
+    catch (Exception e) {
+      e.printStackTrace();
+    }
+  }
+
+  public void processGameEvent(GameEvent ge, long delay) {
+    _delay.add(delay + "");
+    _ge.add(ge);
+    Thread th = new Thread(this);
+    th.start();
+  }
+
+  public void processPlayerShift(ResponsePlayerShift rps, long delay) {
+    _delay.add(delay + "");
+    _ge.add(rps);
+    Thread th = new Thread(this);
+    th.start();
+  }
+
+  public void poll() {
+  }
+
+  public class ActionProcessor extends TimerTask {
+
+    public void run() {
+      pumpGeneratedActions();
+    }
+  }
+
+}

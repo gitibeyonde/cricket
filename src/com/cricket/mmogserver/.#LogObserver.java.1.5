@@ -1,0 +1,147 @@
+package com.golconda.server;
+
+import java.util.*;
+import java.io.Serializable;
+import com.golconda.common.db.*;
+import com.golconda.game.*;
+import com.golconda.game.poker.*;
+import org.apache.log4j.Logger;
+import com.grafix.util.Utils;
+import com.golconda.game.poker.pokerimpl.SitnGoInterface;
+import com.golconda.game.Player.Presence;
+
+public class LogObserver
+    implements Observer, Serializable {
+  // set the category for logging
+  static Logger _cat = Logger.getLogger(LogObserver.class.getName());
+
+  private static Object _dummy = new Object();
+  private static LogObserver _lob = null;
+  private static Hashtable _registry;
+  private static GameRunSequence _grs=null;
+
+  public static LogObserver instance() {
+    if (_lob == null) {
+      synchronized (_dummy) {
+        if (_lob == null) {
+          _lob = new LogObserver();
+        }
+      }
+    }
+    return _lob;
+
+  }
+
+  private LogObserver() {
+    _registry = new Hashtable();
+    _grs = new GameRunSequence();
+  }
+
+  /**
+   * the update is called when a new game run
+   * at the beginning of a new game run update the game id for all the clients
+   * associated with the new game run
+   *
+   * @param o Observable
+   * @param arg Object
+   */
+  public synchronized void update(Observable o, Object arg) {
+    Game g = (Game) o;
+    if (arg == GameStateEvent.GAME_BEGIN) {
+      if (g instanceof Poker) {
+        com.golconda.game.poker.Poker pg = (com.golconda.game.poker.Poker) g;
+        // setup the game run Id
+        g.grid(_grs.getNextGameRunId());
+        g.startTime(new Date());
+        Presence[] players = pg.playerList();
+        // set the player worth
+        GameRunLog grl = new GameRunLog(g.id(), players);
+        _registry.put("" + g.grid(), grl);
+        _cat.debug("START " + g.grid() + "--" + grl);
+      }
+    }
+    else if (arg == GameStateEvent.GAME_OVER) {
+      if (g instanceof Poker) {
+        com.golconda.game.poker.Poker pg = (com.golconda.game.poker.Poker) g;
+        GameRunLog grl = (GameRunLog) _registry.remove("" + g.grid());
+        if (grl == null) { // the game has has already been logged
+          _cat.debug(" GRID = " + g.grid());
+          return;
+        }
+        _cat.info(g.id() + " END " + g.grid() + "--" + grl);
+        if (pg.type().isReal()){
+          Presence[] players = pg.playerList();
+          int pcount = players.length;
+          GameRunSession grs = new GameRunSession(g.id(), g.grid());
+          grs.setEndTime(new Date());
+          grs.setStartTime(g.startTime());
+          //TODO Rake rounding
+          double rake[] = Utils.integralDivide(pg.rake(), pcount);
+          for (int i = 0; i < pcount; i++) {
+            if (players[i].player()  instanceof GamePlayer) {
+              GamePlayer gp = (GamePlayer) players[i].player();
+              double winAmt = grl.amountWon(i, gp.presence(g.id()).worth());
+              grs.setDisplayName(gp.name());
+              grs.setPosition(gp.presence(g.id()).pos());
+              grs.setWinAmount(winAmt);
+              grs.setSessionId(gp.session());
+              grs.setRake(rake[i]);
+              grs.save();
+              /**
+               * Modify login session
+               * The game might be over because this player has left, in that
+               * case do not update his login session as it is already updated
+               */
+              if (!gp.isDead()) {
+                LoginSession ls = gp.loginSession();
+                if (ls != null) { // this might have been set null while kill in gameplayer
+                  ls.setGames(ls.getGames() + 1);
+                  if (winAmt > 0) {
+                    ls.setGamesWon(ls.getGamesWon() + 1);
+                  }
+                  ls.setWinAmount(ls.getWinAmount() + winAmt);
+                  ls.setWagered(ls.getWagered() + Math.abs(winAmt));
+                }
+              }
+            }
+          } // log for each player
+        }// log only if the game is real
+      }
+    } else if (arg == GameStateEvent.SITNGO_OVER){
+      if (g instanceof SitnGoInterface) {
+        //process winners
+        DBSitnGoWinner sitgo = new DBSitnGoWinner((SitnGoInterface)g);
+        sitgo.save();
+      }
+    }
+  } // end update
+
+
+
+  class GameRunLog {
+    int _count;
+    double _worth[];
+
+    public GameRunLog(int tid, Presence[] ps) {
+      _count = ps.length;
+      _worth = new double[_count];
+      for (int i = 0; i < _count; i++) {
+        _worth[i] = ps[i].worth();
+      }
+    }
+
+    public double amountWon(int i, double newWorth) {
+      return newWorth - _worth[i];
+    }
+
+    public String toString() {
+      StringBuffer sb = new StringBuffer();
+      for (int i = 0; i < _count; i++) {
+        sb.append(_worth[i]).append(",");
+      }
+      return sb.toString();
+    }
+  }
+
+
+} //end LoggingObserver

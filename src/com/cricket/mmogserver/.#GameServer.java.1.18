@@ -1,0 +1,420 @@
+package com.golconda.server;
+
+import java.util.Hashtable;
+import java.util.List;
+import org.apache.log4j.Logger;
+import org.apache.log4j.PropertyConfigurator;
+import com.golconda.common.db.*;
+import com.golconda.common.message.*;
+
+import com.agneya.util.*;
+import com.golconda.nio.*;
+import com.golconda.net.*;
+
+import com.golconda.game.Game;
+import com.golconda.game.poker.pokerimpl.*;
+import com.golconda.game.poker.*;
+//import com.golconda.game.bingo.*;
+import com.golconda.game.blackjack.Blackjack;
+import com.golconda.game.casino.Casino;
+
+/**
+ * PokerServer
+ *
+ * The PokerServer runs three main threads.  The first
+ * is the user interface thread.  It gives you a simple
+ * interface that responds to text commands, and quit.
+ * The second is the ClientManager Thread.  It creates a
+ * SocketServer and waits...  The last is a maintenance thread
+ * that cleans up dead games and the such.
+ */
+public class GameServer {
+  // set the category for logging
+  static Logger _cat = Logger.getLogger(GameServer.class.getName());
+
+  // set the configuration object
+  static Configuration _conf;
+
+  public static int _state;
+
+  final static int STARTING = 0;
+  final static int NORMAL = 1;
+  final static int SHUTTING = 2;
+  final static int SUSPEND = 3;
+  final static int STOPPED = 4;
+
+  private static Acceptor _a = null;
+
+  public static void main(String[] args) throws Exception {
+
+    // start the server and set the state as normal
+    _state = STARTING;
+    // create the singleton configuration object
+    _conf = Configuration.instance();
+    //PropertyConfigurator.configure(propFile );
+    PropertyConfigurator.configureAndWatch( (String) _conf.get(
+        "Log4j.propertyFile"), _conf.getInt("Log4j.propertyFile.refreshTimer"));
+
+    LogObserver lob = LogObserver.instance();
+    //start the admin server
+    NWServer serv = new NWServer();
+    serv.startServer(Configuration.instance().getInt("Admin.Network.port"));
+
+    createGamesFromConf();
+
+    // poker tournaments
+    createTournyFromConf();
+
+    // poker sitngo
+    createSitnGoFromConf();
+
+    // blackjack
+    createBJFromConf();
+
+    // bingo rooms
+    //createBingoRoomFromConf();
+
+    //casino games
+    createCasinoFromConf();
+    // start the nio server
+    startAcceptorThread();
+  }
+
+  public static boolean isShutting() {
+    return _state == SHUTTING ? true : false;
+  }
+
+  public static void startAcceptorThread() throws Exception {
+    // start the poker server thread which listens to the poker clients
+    _a = new Acceptor();
+    _a.startServer("com.golconda.server.GameProcessor");
+    _state = NORMAL;
+  }
+
+  public static void stopAcceptorThread() throws Exception {
+    if (_a != null) {
+      _a.stopServer();
+      _state = SHUTTING;
+    }
+  }
+
+  public static int createGames(String type, String name, double minbet,
+                                double maxbet, int minp, int maxp, int rake,
+                                double maxRake, String[] affiliate,
+                                String[] partner, int hr, int lr) throws DBException {
+    Game g = null;
+    LogObserver lob = LogObserver.instance();
+    DBGame dbg = null;
+    int id = GameSequence.getNextGameId();
+    int gameTypeId = -1;
+    double sb[] = Utils.integralDivide(minbet, 2);
+    if (type.equals("holdem")) {
+      g = new Holdem(id, name, minp, maxp, rake, maxRake, affiliate, partner,
+                     lob);
+      ( (Holdem) g).setArgs(minbet, maxbet, maxbet * 25, sb[1], minbet);
+      gameTypeId = 1;
+    }
+    else if (type.equals("omahahi")) {
+      g = new OmahaHi(id, name, minp, maxp, rake, maxRake, affiliate, partner,
+                      lob);
+      ( (OmahaHi) g).setArgs(minbet, maxbet, maxbet * 25, sb[1], minbet);
+      gameTypeId = 2;
+    }
+    else if (type.equals("omahahilo")) {
+      g = new OmahaHiLo(id, name, minp, maxp, rake, maxRake, affiliate, partner,
+                        lob);
+      ( (OmahaHiLo) g).setArgs(minbet, maxbet, maxbet * 25, sb[1], minbet);
+      gameTypeId = 4;
+    }
+    else if (type.equals("studhi")) {
+      g = new Stud(id, name, minp, maxp, rake, maxRake, affiliate, partner, lob);
+      ( (Stud) g).setArgs(minbet, maxbet, maxbet * 25, sb[1], minbet);
+      gameTypeId = 8;
+    }
+    else if (type.equals("studhilo")) {
+      g = new StudHiLo(id, name, minp, maxp, rake, maxRake, affiliate, partner,
+                       lob);
+      ( (StudHiLo) g).setArgs(minbet, maxbet, maxbet * 25, sb[1], minbet);
+      gameTypeId = 16;
+    }
+    else if (type.equals("realholdem")) {
+      g = new RealHoldem(id, name, minp, maxp, rake, maxRake, affiliate,
+                         partner, lob);
+      ( (Holdem) g).setArgs(minbet, maxbet, maxbet * 25, sb[1], minbet);
+      gameTypeId = 256;
+    }
+    else if (type.equals("realomahahi")) {
+      g = new RealOmahaHi(id, name, minp, maxp, rake, maxRake, affiliate,
+                          partner, lob);
+      ( (RealOmahaHi) g).setArgs(minbet, maxbet, maxbet * 25, sb[1], minbet);
+      gameTypeId = 512;
+    }
+    else if (type.equals("realomahahilo")) {
+      g = new RealOmahaHiLo(id, name, minp, maxp, rake, maxRake, affiliate,
+                            partner, lob);
+      ( (RealOmahaHiLo) g).setArgs(minbet, maxbet, maxbet * 25, minbet / 2,
+                                   minbet);
+      gameTypeId = 1024;
+    }
+    else if (type.equals("realstudhi")) {
+      g = new RealStudHi(id, name, minp, maxp, rake, maxRake, affiliate,
+                         partner, lob);
+      ( (RealStudHi) g).setArgs(minbet, maxbet, maxbet * 25, sb[1], minbet);
+      gameTypeId = 2048;
+    }
+    else if (type.equals("realstudhilo")) {
+      g = new RealStudHiLo(id, name, minp, maxp, rake, maxRake, affiliate,
+                           partner, lob);
+      ( (RealStudHiLo) g).setArgs(minbet, maxbet, maxbet * 25, sb[1], minbet);
+      gameTypeId = 4096;
+    }
+    if (hr!= -1 && lr!=-1){
+      g.setLevel(lr, hr);
+    }
+    if (partner==null){
+      dbg = new DBGame(id, gameTypeId, name, "", affiliate, minp, maxp, minbet,
+                       maxbet,
+                       sb[1],
+                       minbet, 4, 4);
+    }
+    else {
+      dbg = new DBGame(id, gameTypeId, name, "", affiliate, partner, hr, lr, minp, maxp, minbet,
+                       maxbet,
+                       sb[1],
+                       minbet, 4, 4);
+    }
+
+    dbg.save();
+    _cat.debug("Game created " + g);
+    return id;
+  }
+
+  public static int createGames(int type, String name, double minbet,
+                                double maxbet, int minP, int maxP, int rake,
+                                double maxRake, String[] affiliate,
+                                String[] partners, int hr, int lr) throws java.
+      io.IOException,
+      ConfigurationException, DBException {
+    String[] game_map = {
+        "holdem", "omahahi", "omahahilo", "studhi", "studhilo",
+        "realholdem", "realomahahi", "realomahahilo", "realstudhi",
+        "realstudhilo"};
+    return createGames(game_map[type], name, minbet, maxbet, minP, maxP, rake,
+                       maxRake, affiliate, partners, hr, lr);
+  }
+
+  public static void createGamesFromConf() throws Exception {
+    int[] game_type = {
+        0, 1, 2, 4, 8, 16, 32, 64, 128, 256};
+    String[] game_map = {
+        "Holdem", "OmahaHi", "OmahaHiLo", "StudHi", "StudHiLo",
+        "RealHoldem", "RealOmahaHi", "RealOmahaHiLo", "RealStudHi",
+        "RealStudHiLo"
+    };
+    for (int i = 0; i < game_type.length; i++) {
+      int gn = 1;
+      String game_str = game_map[i] + "." + "Game" + gn;
+      _cat.debug(game_str + "=" + (String) _conf.get(game_str));
+      while ( (String) _conf.get(game_str) != null) {
+        int game_count = _conf.getInt(game_str);
+        _cat.debug(game_str + " Game count = " + game_count);
+        String game_name = (String) _conf.get(game_str + ".Name");
+        double minbet = _conf.getDouble(game_str + ".Bet.Min");
+        double maxbet = _conf.getDouble(game_str + ".Bet.Max");
+        int minP = _conf.getInt(game_str + ".MinP");
+        int maxP = _conf.getInt(game_str + ".MaxP");
+        int rake = _conf.getInt(game_str + ".Rake");
+        double maxRake = _conf.getDouble(game_str + ".MaxRake");
+        String aff_arr = (String) _conf.get(game_str + ".Affiliate");
+        String frnd_arr = (String) _conf.get(game_str + ".Partners");
+        int hr = _conf.getInt(game_str + ".HIGH_RANK");
+        int lr = _conf.getInt(game_str + ".LOW_RANK");
+
+
+        for (int j = 0; j < game_count; j++,
+             createGames(i, game_name + "_#" + j, minbet, maxbet, minP, maxP,
+                         rake, maxRake, aff_arr != null ? aff_arr.split("\\|") : null,
+                         frnd_arr != null ? frnd_arr.split("\\|") : null, hr, lr)) {
+          ;
+        }
+        gn++;
+        game_name = game_map[i] + "_" + gn;
+        game_str = game_map[i] + "." + "Game" + gn;
+        _cat.debug(game_str + "=" + (String) _conf.get(game_str));
+      }
+    }
+  }
+
+  public static int createSitnGo(String name, double buyIn,
+                                 int pcount) throws DBException {
+    Game g = null;
+    LogObserver lob = LogObserver.instance();
+    DBGame dbg = null;
+    int id = GameSequence.getNextGameId();
+    String aff[] = {
+        "admin"};
+    g = new HoldemSitnGo(id, name, 2, pcount, aff, lob);
+    ( (HoldemSitnGo) g).setArgs(buyIn);
+    dbg = new DBGame(id, 1, "SitNGo", "", aff, 2, pcount, buyIn, -1,
+                     -1,
+                     -1, 4, 4);
+
+    dbg.save();
+    _cat.debug("Game created " + g);
+    return id;
+  }
+
+  public static void createSitnGoFromConf() throws Exception {
+    int gn = 1;
+    String game_str = "SitnGo.Game" + gn;
+    _cat.debug(game_str + "=" + (String) _conf.get(game_str));
+    while ( (String) _conf.get(game_str) != null) {
+      int game_count = _conf.getInt(game_str);
+      _cat.debug(game_str + " Game count = " + game_count);
+      String game_name = (String) _conf.get(game_str + ".Name");
+      double buyIn = _conf.getInt(game_str + ".BuyIn");
+      int maxP = _conf.getInt(game_str + ".MaxP");
+
+      for (int j = 0; j < game_count; j++,
+           createSitnGo(game_name, buyIn, maxP)) {
+        ;
+      }
+      gn++;
+      game_str = "SitnGo.Game" + gn;
+      _cat.debug(game_str + "=" + (String) _conf.get(game_str));
+    }
+  }
+
+  public static int createBJ(String name, double minBet,
+                             double maxBet) throws DBException {
+    Game g = null;
+    LogObserver lob = LogObserver.instance();
+    DBGame dbg = null;
+    int id = GameSequence.getNextGameId();
+    g = new Blackjack(id, name, minBet, maxBet, 6, lob);
+    dbg = new DBGame(id, 65536, "Blackjack", "", -1, -1, minBet, maxBet,
+                     -1, -1, 4, 4);
+
+    dbg.save();
+    _cat.debug("Game created " + g);
+    return id;
+  }
+
+  public static void createBJFromConf() throws Exception {
+    int gn = 1;
+    String game_str = "Blackjack.Game" + gn;
+    _cat.debug(game_str + "=" + (String) _conf.get(game_str));
+    while ( (String) _conf.get(game_str) != null) {
+      int game_count = _conf.getInt(game_str);
+      _cat.debug(game_str + " Game count = " + game_count);
+      String game_name = (String) _conf.get(game_str + ".Name");
+      double minBet = _conf.getInt(game_str + ".MinBet");
+      double maxBet = _conf.getInt(game_str + ".MaxBet");
+
+      for (int j = 0; j < game_count; j++,
+           createBJ(game_name, minBet, maxBet)) {
+        ;
+      }
+      gn++;
+      game_str = "Blackjack.Game" + gn;
+      _cat.debug(game_str + "=" + (String) _conf.get(game_str));
+    }
+  }
+
+  public static int createCasino(String name, String type, double minBet,
+                                 double maxBet) throws DBException {
+    Game g = null;
+    LogObserver lob = LogObserver.instance();
+    DBGame dbg = null;
+    int id = GameSequence.getNextGameId();
+    g = new Casino(id, name, type, minBet, maxBet, lob);
+    dbg = new DBGame(id, 262144, "Casino", type, -1, -1, minBet, maxBet,
+                     -1, -1, 4, 4);
+
+    //dbg.save();
+    _cat.debug("Game created " + g);
+    return id;
+  }
+
+  public static void createCasinoFromConf() throws Exception {
+    int gn = 1;
+    String game_str = "Casino.Game" + gn;
+    _cat.debug(game_str + "=" + (String) _conf.get(game_str));
+    while ( (String) _conf.get(game_str) != null) {
+      int game_count = _conf.getInt(game_str);
+      _cat.debug(game_str + " Game count = " + game_count);
+      String game_name = (String) _conf.get(game_str + ".Name");
+      String game_type = (String) _conf.get(game_str + ".Type");
+      double minBet = _conf.getInt(game_str + ".MinBet");
+      double maxBet = _conf.getInt(game_str + ".MaxBet");
+
+      for (int j = 0; j < game_count; j++,
+           createCasino(game_name, game_type, minBet, maxBet)) {
+        ;
+      }
+      gn++;
+      game_str = "Casino.Game" + gn;
+      _cat.debug(game_str + "=" + (String) _conf.get(game_str));
+    }
+  }
+
+  public static void createTournyFromConf() throws Exception {
+    int count = 1;
+    String name;
+    while ( (name = (String) _conf.get("Tournament" + count)) != null) {
+      createTourny(name, (String) _conf.get("Tournament" + count +
+                                            ".Schedule"),
+                   (String) _conf.get("Tournament" + count + ".BuyIn"),
+                   (String) _conf.get("Tournament" + count +
+                                      ".Schedule.DeclarationInterval"),
+                   (String) _conf.get("Tournament" + count +
+                                      ".Schedule.RegistrationInterval"),
+                   (String) _conf.get("Tournament" + count +
+                                      ".Schedule.JoinInterval"));
+      count++;
+    }
+  }
+
+  public static int createTourny(String name, String schedule, String buyin,
+                                 String decl, String reg, String join) throws
+      DBException {
+
+    LogObserver lob = LogObserver.instance();
+    TournyController tc = TournyController.instance();
+    return tc.addTourny(name, schedule,
+                        buyin,
+                        decl,
+                        reg,
+                        join,
+                        lob);
+
+  }
+
+  /*
+    public static void createBingoRoomFromConf() {
+      LogObserver lob = LogObserver.instance();
+      BingoController tc = BingoController.instance();
+      int count = 1;
+      String name;
+      while ( (name = (String) _conf.get("Bingo" + count)) != null) {
+        try {
+          tc.addBingoRoom(name,
+                          (String) _conf.get("Bingo1.Schedule"),
+                          Double.parseDouble( (String) _conf.get(
+              "Bingo1.Ticket")),
+                          (String) _conf.get(
+              "Bingo1.Schedule.DeclarationInterval"),
+                          Integer.parseInt( (String) _conf.get(
+              "Bingo1.Jackpot.Percentage")),
+                          Integer.parseInt( (String) _conf.get(
+              "Bingo1.House.Percentage")),
+                          lob);
+          count++;
+        }
+        catch (DBException e) {
+          _cat.fatal("Unable to create bingo room", e);
+        }
+      }
+    }
+   */
+} // end PokerServer

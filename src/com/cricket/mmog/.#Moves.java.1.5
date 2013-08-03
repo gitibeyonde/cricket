@@ -1,0 +1,145 @@
+package com.golconda.game;
+
+public class Moves {
+
+  //Poker moves
+  public static final int CHECK = 1;
+  public static final int CALL = 2;
+  public static final int RAISE = 4;
+  public static final int FOLD = 8;
+
+  public static final int SBBB = 16;
+  public static final int BRINGIN = 32;
+  public static final int ALL_IN = 64;
+  public static final int ANTE = 128;
+
+  public static final int OPT_OUT = 256;
+  public static final int BET = 512;
+  public static final int BIG_BLIND = 1024;
+  public static final int SMALL_BLIND = 2048;
+
+  public static final int WAIT = 4096;
+  public static final int CANCEL = 8192;
+  public static final int LEAVE = 16384;
+  public static final int MOVE = 32768;
+
+  public static final int JOIN = 65536;
+  public static final int NONE = 131072;
+  public static final int u1 = 262144;
+  public static final int u2 = 524288;
+
+  //Bingo specific
+  public static final int BNONE = 1048576;
+  public static final int BLEAVE = 2097152;
+  public static final int u3 = 4194304;
+
+  // Casino
+  public static final int CASINO_PLAY = 8388608;
+
+  //Blackjack specific
+  public static final int BJ_ANTE = 16777216;
+  public static final int HIT = 33554432;
+  public static final int STAND = 67108864;
+  public static final int SURRENDER = 134217728;
+
+  public static final int INSURANCE = 268435456;
+  public static final int DOUBLE_DOWN = 536870912;
+  public static final int SPLIT = 1073741824;
+
+// VARIOUS MASKS
+  public static final int BJ_MASK = 0x7F000000;
+  public static final int BINGO_MASK= 0x700000;
+  public static final int RESP_REQ = 0xFFF;
+  public static final int POKER_MASK = 0xFFFFF;
+  public static final int CASINO_MASK= 0x800000;
+
+
+
+  private static String[] strings = new String[] {
+      "check", "call", "raise", "fold",
+      "sb-bb", "bringin", "all-in", "ante",
+      "opt-out", "bet", "big-blind", "small-blind",
+      "wait", "cancel", "leave", "move",
+      "join", "none", "u1", "u2",
+      "bleave", "bnone", "u3", "casino-play",
+      "ante", "hit", "stand", "surrender",
+      "insurance", "u5", "u6" };
+
+  static int[] values = new int[] {
+      1, 2, 4, 8,
+      16, 32, 64, 128,
+      256, 512, 1024, 2048,
+      4096, 8192, 16384, 32768,
+      65536, 131072, 262144, 524288,
+      1048576, 2097152, 4194304, 8388608,
+      16777216, 33554432, 67108864, 134217728,
+      268435456, 536870912, 1073741824 };
+
+  private int intVal;
+
+  private Moves(int intVal) {
+    this.intVal = intVal;
+  }
+
+  public static int intValue(String str) {
+    for (int i = 0; i < strings.length; i++) {
+      if (str.equals(strings[i])) {
+        return values[i];
+      }
+    }
+    return -9;
+  }
+
+  public static int intIndex(int move) {
+    byte index = -1;
+    while (move > 0) {
+      index++;
+      move >>>= 1;
+    }
+    return index;
+  }
+
+  public static String stringValue(int mvId) {
+    StringBuffer buf = new StringBuffer();
+    for (int i = 0; i < values.length; i++) {
+      if (mvId == values[i]) {
+        return strings[i];
+      }
+      else if ( (mvId & values[i]) > 0) {
+        buf.append(strings[i]).append("|");
+      }
+    }
+    if (buf.length() == 0) {
+      throw new IllegalArgumentException("Invalid mvId : " + mvId);
+    }
+    return buf.deleteCharAt(buf.length() - 1).toString();
+  }
+
+  public static boolean idValid(int mvId) {
+    if (mvId > 12 || mvId < 0) {
+      return false;
+    }
+    return true;
+  }
+
+  public static void main(String[] argv) {
+  }
+
+  public int intVal() {
+    return intVal;
+  }
+
+  // implement this method ...
+  public boolean equals(Object o) {
+    return super.equals(o);
+  }
+
+  public int hashCode() {
+    return super.hashCode();
+  }
+
+  public static boolean responseRequired(int move) {
+    return (move & RESP_REQ) > 0;
+  }
+
+}

@@ -1,0 +1,1285 @@
+package com.golconda.server;
+
+import java.util.Enumeration;
+import java.util.Iterator;
+import org.apache.log4j.*;
+import java.util.Vector;
+import java.util.List;
+import java.util.Date;
+import java.io.IOException;
+import java.lang.Runnable;
+
+import com.grafix.util.Configuration;
+import java.util.NoSuchElementException;
+
+import com.golconda.nio.*;
+import com.golconda.common.message.*;
+
+import com.golconda.common.db.DBPlayer;
+import com.golconda.common.db.DBBingo;
+import com.golconda.common.db.LoginSession;
+
+import com.golconda.game.*;
+import com.golconda.game.util.*;
+import com.golconda.game.bingo.*;
+import com.golconda.game.gamemsgimpl.*;
+import com.golconda.game.poker.*;
+import com.golconda.game.poker.pokerimpl.*;
+import com.golconda.game.Player.Presence;
+import com.golconda.game.util.BingoCardGenerator;
+import com.golconda.game.blackjack.Blackjack;
+import com.golconda.common.db.DBCard;
+
+/**
+ * Handler will work on the queued GameEvents and will invoke the
+ * handler method on GameServer. The handler is blocking. Resulting
+ * responses are written back to the queue
+ */
+
+public class GameProcessor
+    implements CommandProcessor {
+  static Logger _cat = Logger.getLogger(GameProcessor.class.getName());
+  private int _nThreads;
+  private Thread _t[];
+  private CommandQueue _com;
+  private boolean _keepservicing;
+  private static int _id = 0;
+  private static Configuration _conf;
+  private String _cm = "";
+
+  {
+    _conf = Configuration.instance();
+    _nThreads = _conf.getInt("Server.processor.threadCount");
+    _cm = (String) _conf.get("Network.client.config");
+  }
+
+  public GameProcessor() throws Exception {
+  }
+
+  public void startProcessor(CommandQueue q) throws Exception {
+    _com = q;
+    _t = new Thread[_nThreads];
+    _keepservicing = true;
+    for (int i = 0; i < _nThreads; i++) {
+      _t[i] = new Thread(this);
+      _t[i].start();
+      _t[i].setName("Queue-" + _id + " Processor-" + i);
+      _t[i].setPriority(Thread.NORM_PRIORITY);
+    }
+    _id++;
+  }
+
+  public void stopProcessor() throws Exception {
+    _keepservicing = false;
+    for (int i = 0; i < _nThreads; i++) {
+      _t[i].stop();
+    }
+  }
+
+  public void wakeUp() {
+    for (int i = 0; i < _nThreads; _t[i++].interrupt()) {
+      ;
+    }
+  }
+
+  public void run() {
+    while (_keepservicing) {
+      Command c = null;
+      try {
+        c = CommandFactory.getCommand(_com.fetch());
+        _cat.debug("Processing " + c);
+        if (c != null) {
+          process(c);
+        }
+      }
+      catch (NoSuchElementException e) {
+        try {
+          Thread.currentThread().sleep(1000000);
+        }
+        catch (InterruptedException ee) {
+          // continue
+        }
+      }
+    }
+  }
+
+  /**
+   * fetch a client from the queue and process it
+   */
+  public void process(Command ge) {
+    if (ge == null) {
+      return;
+    }
+    try {
+      _cat.info("Game Event " + ge);
+      Handler handler = (Handler) ge.handler();
+      switch (GameServer._state) {
+        case GameServer.STARTING:
+          starting(ge, handler);
+          return;
+        case GameServer.SHUTTING:
+          shutting(ge, handler);
+          return;
+        case GameServer.SUSPEND:
+          suspend(ge, handler);
+          return;
+        case GameServer.NORMAL:
+          // fall thru
+      }
+      switch (ge.getCommandName()) {
+        case Command.C_CONNECT:
+          connect(ge, handler);
+          break;
+        case Command.C_RECONNECT:
+          reconnect(ge, handler);
+          break;
+        case Command.C_REGISTER:
+          register(ge, handler);
+          break;
+        case Command.C_LOGIN:
+          login(ge, handler);
+          break;
+        case Command.C_LOGOUT:
+          logout(ge, handler);
+          break;
+        case Command.C_SIT_OUT:
+          sitOut(ge, handler);
+          break;
+        case Command.C_SIT_IN:
+          sitIn(ge, handler);
+          break;
+        case Command.C_CONFIG:
+          config(ge, handler);
+          break;
+        case Command.C_BUYCHIPS:
+          buyChips(ge, handler);
+          break;
+        case Command.C_GET_CHIPS_INTO_GAME:
+          getChips(ge, handler);
+          break;
+        case Command.C_TABLELIST:
+          gameList(ge, handler);
+          break;
+        case Command.C_TOURNYLIST:
+          tournyList(ge, handler);
+          break;
+        case Command.C_TURN_DEAF:
+          turnDeaf(ge, handler);
+          break;
+        case Command.C_TABLEDETAIL:
+          gameDetail(ge, handler);
+          break;
+        case Command.C_WAITER:
+          addWaiter(ge, handler);
+          break;
+        case Command.C_TOURNYDETAIL:
+          tournyDetail(ge, handler);
+          break;
+        case Command.C_TOURNYMYTABLE:
+          tournyMyTable(ge, handler);
+          break;
+        case Command.C_TOURNYREGISTER:
+          tournyRegister(ge, handler);
+          break;
+        case Command.C_BINGOROOMDETAIL:
+          bingoRooomDetail(ge, handler);
+          break;
+        case Command.C_BINGOROOMLIST:
+          bingoRoomList(ge, handler);
+          break;
+        case Command.C_TICKET:
+          ticket(ge, handler);
+          break;
+        case Command.C_BUY_TICKET:
+          buyTicket(ge, handler);
+          break;
+        case Command.C_MESSAGE:
+          message(ge, handler);
+          break;
+        case Command.C_MOVE:
+          move(ge, handler);
+          break;
+        case Command.C_PREFERENCES:
+          preferences(ge, handler);
+          break;
+        case Command.C_CARD:
+          chargeCard(ge, handler);
+          break;
+
+        case Command.C_ADMIN:
+          break;
+        case Command.C_HTBT:
+
+          //ignore
+          break;
+        default:
+          handler.putResponse(new com.golconda.common.message.Response(com.
+              golconda.common.message.Response.FAILURE,
+              com.golconda.common.message.Response.R_UNKNOWN));
+          _cat.info("Unknown Command = " + ge);
+      }
+    }
+    catch (Throwable e) {
+      // remove the player from the game
+      _cat.fatal("Error in processing " + ge, e);
+    }
+  } // end process
+
+  /**
+   * This method delivers appropriate responses to the players and observers
+   *
+   * @param seq
+   * @param session
+   * @param r
+   * @throws IOException
+   **/
+  public static void deliverResponse(com.golconda.game.resp.Response r) throws
+      IOException {
+    // return a table detail response
+    Presence cl[] = r.recepients();
+    for (int i = 0; i < cl.length; i++) {
+      Presence clnt = (Presence) cl[i];
+      ResponseGameEvent rge = new ResponseGameEvent(1, r.getCommand(clnt));
+      _cat.info("Response to Player=" + clnt.name() + "; " + rge);
+      ( (GamePlayer) clnt.player()).deliver(rge);
+    }
+    cl = r.observers();
+    for (int i = 0; cl != null && i < cl.length; i++) {
+      Presence clnt = (Presence) cl[i];
+      String broadcast = r.getBroadcast();
+      if (broadcast != null) {
+        ResponseGameEvent rge = new ResponseGameEvent(1, broadcast);
+        _cat.debug("Response to Observer=" + clnt.name() + "; " + rge);
+        ( (GamePlayer) clnt.player()).deliver(rge);
+      }
+    }
+  }
+
+  /**
+   * This method delivers appropriate responses to the players and observers
+   *
+   * @param seq
+   * @param session
+   * @param r
+   * @throws IOException
+   **/
+  public static void deliverMessageResponse(com.golconda.game.resp.Response r) throws
+      IOException {
+    // return a table detail response
+    Presence cl[] = r.recepients();
+    for (int i = 0; i < cl.length; i++) {
+      Presence clnt = (Presence) cl[i];
+      ResponseMessage rge = new ResponseMessage(1, r.getCommand(clnt).toString());
+      _cat.info("Message to Player=" + clnt.name() + "; " + rge);
+      ( (GamePlayer) clnt.player()).deliver(rge);
+    }
+    cl = r.observers();
+    for (int i = 0; i < cl.length; i++) {
+      Presence clnt = (Presence) cl[i];
+      ResponseMessage rge = new ResponseMessage(1, r.getBroadcast().toString());
+      _cat.debug("Message to Observer=" + clnt.name() + "; " + rge);
+      ( (GamePlayer) clnt.player()).deliver(rge);
+    }
+  }
+
+  private void starting(Command ge, Handler handler) {
+    GamePlayer pp = new GamePlayer(handler);
+    handler.attachment( (Client) pp);
+    com.golconda.common.message.Response gr = new com.golconda.common.message.
+        Response(com.golconda.common.message.Response.FAILURE,
+                 com.golconda.common.message.Response.STARTING);
+    handler.putResponse(gr);
+  }
+
+  private void shutting(Command ge, Handler handler) {
+    GamePlayer pp = new GamePlayer(handler);
+    handler.attachment( (Client) pp);
+    com.golconda.common.message.Response gr = new com.golconda.common.message.
+        Response(com.golconda.common.message.Response.FAILURE,
+                 com.golconda.common.message.Response.SHUTTING);
+    handler.putResponse(gr);
+  }
+
+  private void suspend(Command ge, Handler handler) {
+    GamePlayer pp = new GamePlayer(handler);
+    handler.attachment( (Client) pp);
+    com.golconda.common.message.Response gr = new com.golconda.common.message.
+        Response(com.golconda.common.message.Response.FAILURE,
+                 com.golconda.common.message.Response.SUSPEND);
+    handler.putResponse(gr);
+  }
+
+  private void connect(Command ge, Handler handler) {
+    GamePlayer pp = new GamePlayer(handler);
+    handler.attachment(pp);
+    com.golconda.common.message.Response gr = new com.golconda.common.message.
+        Response(com.golconda.common.message.Response.SUCCESS,
+                 com.golconda.common.message.Response.R_CONNECT);
+    handler.putResponse(gr);
+  }
+
+  private void reconnect(Command ge, Handler handler) {
+    GamePlayer pp = new GamePlayer(handler);
+    handler.attachment( (Client) pp);
+    com.golconda.common.message.Response gr = new com.golconda.common.message.
+        Response(com.golconda.common.message.Response.SUCCESS,
+                 com.golconda.common.message.Response.R_RECONNECT);
+    handler.putResponse(gr);
+  }
+
+  private void register(Command ge, Handler handler) {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    String user = ( (CommandRegister) ge).getUserName();
+    String password = ( (CommandRegister) (ge)).getPassword();
+    String email = ( (CommandRegister) (ge)).getEmail();
+    String bonus_code = ( (CommandRegister) (ge)).getBonusCode();
+    String source = ( (CommandRegister) (ge)).getSource();
+    com.golconda.common.message.Response gr = null;
+    if (user.length() > 2 && email.length() > 2 && password.length() > 2) {
+      int gender = ( (CommandRegister) (ge)).getGender();
+      // check if the user exists
+      // regsiter the user
+      DBPlayer dbp = new DBPlayer(user, password);
+      dbp.setEmailId(email);
+      dbp.setGender(gender);
+      dbp.setPassword(password);
+      dbp.setPlayBankroll(10000);
+      dbp.setPlayBankrollTs(System.currentTimeMillis());
+      dbp.setBonusCode(bonus_code);
+      _cat.info(dbp);
+      int res = dbp.save();
+      if (res == 1) {
+        pp.name(user);
+        pp.gender(gender);
+        pp.setAuthenticated();
+        pp.setDBPlayer(dbp);
+        pp.playWorth(dbp.getPlayChips());
+        pp.realWorth(dbp.getRealChips());
+
+        gr = new ResponseLogin(true,
+                               com.golconda.common.message.Response.SUCCESS,
+                               pp.gender(),
+                               dbp.getPlayChips(), dbp.getPlayBankroll(),
+                               dbp.getRealChips(), dbp.getRealBankroll(),
+                               dbp.getPreferences());
+        LoginSession ls = new LoginSession(user);
+        ls.setDispName(user);
+        ls.setLoginTime(new Date());
+        ls.setLogoutTime(new Date());
+        ls.setSessionId(handler._id);
+        ls.setIp(handler.inetAddress().getHostAddress());
+        ls.setStartWorth(pp.realWorth());
+        ls.save();
+        pp.loginSession(ls);
+      }
+      else {
+        gr = new com.golconda.common.message.Response(com.golconda.common.
+            message.Response.
+            USER_EXISTS,
+            com.golconda.common.message.Response.
+            R_REGISTER);
+      }
+    }
+    else {
+      gr = new com.golconda.common.message.Response(com.golconda.common.message.
+          Response.
+          FAILURE,
+          com.golconda.common.message.Response.
+          R_REGISTER);
+    }
+    handler.putResponse(gr);
+  }
+
+  private void config(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    ResponseConfig gr = new ResponseConfig(1, _cm);
+    _cat.debug("Response config = " + gr);
+    handler.putResponse(gr);
+  }
+
+  private void getChips(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    CommandGetChipsIntoGame cbc = (CommandGetChipsIntoGame) ge;
+    double chips = cbc.getChips();
+    int tid = cbc.getTableId();
+    com.golconda.common.message.ResponseGetChipsIntoGame r = null;
+
+    if (Game.game(tid).type().isReal() && chips < pp.realWorth()) {
+      pp.presence(tid).addToWorth(chips);
+      pp.realWorth(pp.realWorth() - chips);
+      r = new com.golconda.common.message.ResponseGetChipsIntoGame(com.golconda.
+          common.message.
+          Response.SUCCESS, Response.R_GET_CHIPS_INTO_GAME, tid, chips);
+    }
+    else if (chips < pp.playWorth()) {
+      pp.presence(tid).addToWorth(chips);
+      pp.playWorth(pp.playWorth() - chips);
+      r = new com.golconda.common.message.ResponseGetChipsIntoGame(com.golconda.
+          common.message.
+          Response.SUCCESS, Response.R_GET_CHIPS_INTO_GAME, tid, chips);
+    }
+    else {
+      //error
+      r = new com.golconda.common.message.ResponseGetChipsIntoGame(com.golconda.
+          common.message.
+          Response.FAILURE, Response.R_GET_CHIPS_INTO_GAME, tid, -1);
+    }
+
+    handler.putResponse(new ResponseBuyChips(1,
+                                             pp.playWorth(),
+                                             pp.getDBPlayer().
+                                             getPlayBankroll(),
+                                             pp.realWorth(),
+                                             pp.getDBPlayer().
+                                             getRealBankroll()));
+
+    handler.putResponse(r);
+  }
+
+  private void buyChips(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    CommandBuyChips cbc = (CommandBuyChips) ge;
+    double realChips = cbc.getRealChips();
+    double playChips = cbc.getPlayChips();
+
+    DBPlayer dbp = pp.getDBPlayer();
+    int r1 = -1, r2 = -1;
+    if (realChips > 0) {
+      r1 = dbp.buyRealChips(handler._id, 0, realChips, 1);
+      if (r1 != -1) {
+        pp.realWorth(realChips + pp.realWorth());
+      }
+    }
+    if (playChips > 0) {
+      r2 = dbp.buyPlayChips(handler._id, 0, playChips, 1);
+      if (r2 != -1) {
+        pp.playWorth(playChips + pp.playWorth());
+      }
+    }
+
+    ResponseBuyChips gr = new ResponseBuyChips(r1 == -1 && r2 == -1 ? 0 : 1,
+                                               dbp.getPlayChips(),
+                                               dbp.getPlayBankroll(),
+                                               dbp.getRealChips(),
+                                               dbp.getRealBankroll());
+    handler.putResponse(gr);
+  }
+
+  private void logout(Command ge, Handler handler) {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    if (pp == null) {
+      return; // the player does not exist
+    }
+    if (pp.isAuthenticated()) {
+      // remove the player from a game if seated
+      pp.kill();
+    }
+  }
+
+  private void sitIn(Command ge, Handler handler) throws IOException {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    CommandInt cint = (CommandInt) ge;
+    int tid = cint.getIntVal();
+
+    pp.presence(tid).unsetSitOutNextGame();
+    pp.presence(tid).setSitin();
+    Game g = Game.game(tid);
+    if (g instanceof Poker) {
+      Poker pg = (Poker) g;
+      if (!pg._inProgress) {
+        deliverResponse(pg.start());
+      }
+    }
+    _cat.warn("Player " + pp.name() + " is sitting in");
+  }
+
+  private void sitOut(Command ge, Handler handler) {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    CommandInt cint = (CommandInt) ge;
+    int tid = cint.getIntVal();
+
+    pp.presence(tid).setSitOutNextGame();
+    _cat.warn("Player " + pp.name() + " is sitting out");
+  }
+
+  private void login(Command ge, Handler handler) {
+    com.golconda.common.message.Response gr = null;
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    String user = ( (CommandLogin) ge).getUserName();
+    String token = ( (CommandLogin) ge).getToken();
+
+    if (pp.isAuthenticated()) {
+      gr = new com.golconda.common.message.Response(com.golconda.common.message.
+          Response.
+          AUTHENTICATE,
+          com.golconda.common.message.Response.
+          R_LOGIN);
+      handler.putResponse(gr);
+    }
+    String password = ( (CommandLogin) (ge)).getPassword();
+    // check if user is already logged in
+    Enumeration i = handler.registry().elements();
+    while (i.hasMoreElements()) {
+      Handler op = (Handler) i.nextElement();
+      GamePlayer ogp = (GamePlayer) op.attachment();
+      if (ogp != null && ogp.name().equals(user) && ogp.isAuthenticated()) {
+        //swap the older game player with this
+        //handler.attachment(ogp);
+        if (!handler.equals(op)) { // same handler may be trying to login again
+          //op.attachment(null); // set the attachment to null so that the gameplayer survives
+          op.kill();
+        }
+      }
+    }
+    if (user.length() < 2) {
+      gr = new com.golconda.common.message.Response(com.golconda.common.message.
+          Response.
+          FAILURE,
+          com.golconda.common.message.Response.
+          R_LOGIN);
+    }
+    DBPlayer dbp = new DBPlayer();
+    boolean player_exists = false;
+    try {
+      player_exists = dbp.get(user, password);
+    }
+    catch (java.sql.SQLException e) {
+      _cat.warn(e.getMessage());
+      gr = new com.golconda.common.message.Response(com.golconda.common.message.
+          Response.
+          FAILURE,
+          com.golconda.common.message.Response.
+          R_LOGIN);
+      handler.putResponse(gr);
+      return;
+    }
+    if (player_exists) {
+      _cat.debug("Player exists = " + player_exists);
+      pp.setDBPlayer(dbp);
+      pp.name(user);
+      pp.setAuthenticated();
+      pp.gender(dbp.getGender());
+      pp.playWorth(dbp.getPlayChips());
+      pp.realWorth(dbp.getRealChips());
+      // authenticate and get the players worth and email from the database
+      gr = new ResponseLogin(com.golconda.common.message.Response.SUCCESS,
+                             pp.gender(),
+                             dbp.getPlayChips(), dbp.getPlayBankroll(),
+                             dbp.getRealChips(), dbp.getRealBankroll(),
+                             dbp.getPreferences());
+      _cat.debug("Response = " + gr + " Player=" + pp);
+      // set the user session information
+      LoginSession ls = new LoginSession(user);
+      ls.setDispName(user);
+      ls.setLoginTime(new Date());
+      ls.setLogoutTime(new Date());
+      ls.setSessionId(handler._id);
+      ls.setIp(handler.inetAddress().getHostAddress());
+      ls.setStartWorth(pp.realWorth()); //pp.worth());
+      ls.save();
+      pp.loginSession(ls);
+
+      //check if the token is not null and move the money into players account
+      if (token != null && token.length() > 10) {
+        double card_amt = DBCard.chargeCard(user, pp.session());
+        if (card_amt == -1) {
+          gr = new com.golconda.common.message.Response(com.golconda.common.
+              message.
+              Response.CARD_FAILED,
+              com.golconda.common.message.Response.
+              R_LOGIN);
+
+        }
+        pp.realWorth( +pp.realWorth());
+      }
+    }
+    else {
+      // no player matches the criteria
+      _cat.info("Player does not exist in the db " + user);
+      gr = new com.golconda.common.message.Response(com.golconda.common.message.
+          Response.
+          AUTHENTICATE,
+          com.golconda.common.message.Response.
+          R_LOGIN);
+    }
+    handler.putResponse(gr);
+  }
+
+  private void gameList(Command ge, Handler handler) throws Exception {
+    Player pp = (Player) handler.attachment();
+    int mask = ( (CommandTableList) ge).getType();
+    int i = 0;
+    Game[] g = Game.listAll();
+    Vector games = new Vector();
+    for (int k = 0; k < g.length; k++) {
+      if ( (g[k].type().intVal() & mask) == 0) {
+        continue;
+      }
+      int gid = g[k].id();
+      Presence p = pp.presence(gid);
+      com.golconda.game.resp.Response r = com.golconda.game.Game.handle(new
+          GameDetailsImpl(gid, p));
+      games.add(r.getCommand(p).toString());
+    }
+    ResponseTableList gr = new ResponseTableList(com.golconda.common.message.
+                                                 Response.
+                                                 SUCCESS,
+                                                 (String[]) games.
+                                                 toArray(new String[games.size()]));
+    _cat.info("Response TABLELIST = " + gr);
+    // set the game response in the clients out queue
+    handler.putResponse(gr);
+  }
+
+  private void tournyList(Command ge, Handler handler) throws Exception {
+    Player pp = (Player) handler.attachment();
+    TournyController tc = TournyController.instance();
+    Tourny[] t = tc.listAll();
+    String[] ts = new String[t.length];
+    for (int k = 0; k < t.length; k++) {
+      ts[k] = t[k].stringValue( (Player) pp);
+    }
+    ResponseTournyList gr = new ResponseTournyList(com.golconda.common.message.
+        Response.SUCCESS, ts);
+    _cat.debug("Response TournyList = " + gr);
+    // set the game response in the clients out queue
+    handler.putResponse(gr);
+  }
+
+  private void bingoRoomList(Command ge, Handler handler) throws Exception {
+    Player pp = (Player) handler.attachment();
+    BingoController tc = BingoController.instance();
+    BingoRoom[] t = tc.listAll();
+    String[] ts = new String[t.length];
+    for (int k = 0; k < t.length; k++) {
+      ts[k] = t[k].stringValue( (Player) pp);
+    }
+    ResponseBingoRoomList gr = new ResponseBingoRoomList(com.golconda.common.
+        message.Response.SUCCESS, ts);
+    _cat.debug("Response BingoRoomList = " + gr);
+    // set the game response in the clients out queue
+    handler.putResponse(gr);
+  }
+
+  private synchronized void turnDeaf(Command ge, Handler handler) throws
+      Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    CommandInt cint = (CommandInt) ge;
+    int tid = cint.getIntVal();
+
+    pp.leaveWatch(pp.presence(tid));
+  }
+
+  private void gameDetail(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    int tid = ( (CommandTableDetail) ge).getTableId();
+    // query the game server for game  details
+    // get the table details and set
+    Game g = Game.game(tid);
+    if (tid == -1 || g == null) {
+      ResponseInt rge = new ResponseInt(0, Response.R_TABLEDETAIL, tid);
+      handler.putResponse(rge);
+      return;
+    }
+    ResponseTableDetail rge = new ResponseTableDetail(1,
+        pp.addWatch(tid));
+    handler.putResponse(rge);
+  }
+
+  private void addWaiter(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    int tid = ( (CommandInt) ge).getIntVal();
+    // query the game server for game  details
+    // get the table details and set
+    if (tid == -1 || Game.game(tid) == null) {
+      ResponseInt rge = new ResponseInt(0, Response.R_WAITER, tid);
+      handler.putResponse(rge);
+      return;
+    }
+    Poker pg = ( (Poker) Game.game(tid));
+    _cat.warn("Player count " + pg.allPlayers(0).length + " max players " +
+              pg.maxPlayers());
+    if (pg.allPlayers(0).length < pg.maxPlayers()) {
+      //table is partially filled/no waiting
+      _cat.warn("There is no waiting on table " + pg);
+      ResponseInt rge = new ResponseInt(Response.PARTIALLY_FILLED,
+                                        Response.R_WAITER, tid);
+      handler.putResponse(rge);
+      return;
+    }
+    Presence p = pp.createPresence(tid);
+    pg.waiterAdd(p);
+    ResponseInt rge = new ResponseInt(1, Response.R_WAITER, tid);
+    _cat.debug("Waiting resp = " + rge);
+    handler.putResponse(rge);
+  }
+
+  private void tournyDetail(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    String tid = ( (CommandTournyDetail) ge).getTournyName();
+    TournyController tc = TournyController.instance();
+    Tourny t = tc.getTourny(tid);
+
+    Response gr = null;
+    if (t == null) {
+      gr = new Response(Response.R_TABLEDETAIL, Response.NONEXIST);
+    }
+    else {
+      _cat.debug("Tourny = " + t.stringValue(pp));
+      // if tourny has not yet started send reg details
+      String te = t.stringValue( (Player) pp);
+      _cat.debug("Tournament is open for registration " + te);
+      String[] games = null;
+      if (t.isWaiting() || t.isPlaying()) {
+        // check which table is assigned to this player
+        HoldemTourny[] g = t.listAll();
+        games = new String[g.length];
+        for (int k = 0; k < g.length; k++) {
+          int gid = g[k].id();
+          Presence p = pp.presence(gid);
+          com.golconda.game.resp.Response r = com.golconda.game.Game.handle(new
+              GameDetailsImpl(gid, p));
+          games[k] = r.getCommand(p).toString();
+          _cat.debug("Tournament is open for waiting or running " + games[k]);
+        }
+      }
+      gr = new ResponseTournyDetail(com.golconda.common.message.Response.
+                                    SUCCESS,
+                                    te,
+                                    games);
+      _cat.debug("Response TOURNY DETAIL = " + gr);
+    }
+    // set the game response in the clients out queue
+    handler.putResponse(gr);
+  }
+
+  private void bingoRooomDetail(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    String tid = ( (CommandBingoRoomDetail) ge).getBingoRoomName();
+    BingoController tc = BingoController.instance();
+    BingoRoom t = tc.getBingoRoom(tid);
+    Response gr = null;
+    if (t == null) {
+      gr = new Response(Response.R_TABLEDETAIL, Response.NONEXIST);
+    }
+    else {
+      _cat.debug("BingoRoom = " + t.stringValue(pp));
+      // if tourny has not yet started send reg details
+      String te = t.stringValue( (Player) pp);
+      _cat.debug("Bigno is open for registration " + te);
+      String game = null;
+      if (t.isWaiting() || t.isPlaying()) {
+        // check which table is assigned to this player
+        Bingo g = t.getGame();
+        int gid = g.id();
+        Presence p = pp.presence(gid);
+        //observe this game
+        com.golconda.game.resp.Response r = com.golconda.game.Game.handle(new
+            ObserveGameImpl(p, gid));
+        game = r.getCommand(p).toString();
+        _cat.debug("BingoRoom is open for waiting or running " + game);
+      }
+      gr = new ResponseBingoRoomDetail(com.golconda.common.message.Response.
+                                       SUCCESS,
+                                       te,
+                                       game);
+      _cat.debug("Response BINGO ROOM DETAIL = " + gr);
+    }
+    // set the game response in the clients out queue
+    handler.putResponse(gr);
+  }
+
+  private void tournyMyTable(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    int tid = ( (CommandTournyMyTable) ge).getTournyId();
+    TournyController tc = TournyController.instance();
+    Tourny t = tc.getTourny(tid + "");
+    _cat.debug("Tourny = " + t.stringValue(pp));
+    // if tourny has not yet started send reg details
+    ResponseTournyMyTable gr = null;
+    int gid = t.myTable(pp);
+    Presence p = pp.presence(gid);
+    gr = new ResponseTournyMyTable(gid == -1 ?
+                                   com.golconda.common.message.Response.FAILURE :
+                                   com.golconda.common.message.Response.SUCCESS,
+                                   gid,
+                                   p.pos());
+    _cat.info("Response TOURNY MY TABLE = " + gr);
+    // set the game response in the clients out queue
+    handler.putResponse(gr);
+  }
+
+  private void tournyRegister(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    com.golconda.common.message.Response gr = null;
+    if (!pp.isAuthenticated()) {
+      // authenticate the client first
+      gr = new com.golconda.common.message.Response(com.golconda.common.message.
+          Response.
+          AUTHENTICATE,
+          com.golconda.common.message.Response.
+          R_TOURNYREGISTER);
+      _cat.info("Response Tourny Register " + gr);
+      // set the game response in the clients out queue
+    }
+    else { //player is authenticated
+      String tid = ( (CommandTournyRegister) ge).getTournyName();
+      TournyController tc = TournyController.instance();
+      Tourny t = tc.getTourny(tid);
+      if (!t.isRegOpen()) {
+        // not open for registration
+        gr = new com.golconda.common.message.Response(com.golconda.common.
+            message.Response.
+            REGISTERATION_CLOSED,
+            com.golconda.common.message.Response.
+            R_TOURNYREGISTER);
+        _cat.info("Tournament not open for Registeration " + gr);
+        // set the game response in the clients out queue
+      }
+      else { //open for registration
+
+        // this will create tourny chips for the player
+        t.dbTourny().register(pp.name());
+        // deduct buyIn1 from his bankroll
+        int r = pp.getDBPlayer().buyTournyChips(handler._id, 0,
+                                                t.getBuyIn()[0]);
+
+        if (r == -1) {
+          //player is broke
+          gr = new com.golconda.common.message.Response(com.golconda.common.
+              message.Response.
+              BROKE,
+              com.golconda.common.message.Response.
+              R_TOURNYREGISTER);
+
+        }
+        else {
+          boolean result = t.register(pp);
+          if (!result) {
+            // already registered
+            gr = new com.golconda.common.message.Response(com.golconda.common.
+                message.Response.
+                ALREADY_REGISTERED,
+                com.golconda.common.message.Response.
+                R_TOURNYREGISTER);
+            _cat.info("Already registered " + gr);
+          }
+          else {
+            gr = new com.golconda.common.message.Response(com.golconda.common.
+                message.Response.SUCCESS,
+                com.golconda.common.message.Response.
+                R_TOURNYREGISTER);
+          }
+        }
+        _cat.info("Registered DETAIL = " + gr);
+        // set the game response in the clients out queue
+        handler.putResponse(gr);
+      }
+    }
+  }
+
+  private void ticket(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    BingoCardGenerator d = new BingoCardGenerator(45);
+    ResponseTicket rt = new ResponseTicket(1, d.allCards());
+    handler.putResponse(rt);
+  }
+
+  private void buyTicket(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    CommandBuyTicket cbt = (CommandBuyTicket) ge;
+    int brid = cbt.getBingoRoomId();
+
+    Presence p = pp.createPresence(brid);
+    p.addBingoCards(cbt.getBingoCards());
+    // add the cards to the db
+    DBBingo.saveTicket(cbt.getBingoCards(),
+                       BingoController.instance().getBingoRoom(brid + "")._bid,
+                       p.name());
+    double cost = BingoController.instance().getBingoRoom(brid + "").
+        getTicketCost();
+    int cnt = cbt.getBingoCardCount();
+    int r = pp.getDBPlayer().buyRealChips(handler._id, 0, cost * cnt, 1);
+    BingoController.instance().getBingoRoom(brid +
+                                            "").addToPrizePool(cost * cnt);
+    p.purchased(true);
+    Response gr = new Response(r == -1 ? 0 : 1, Response.R_BUY_TICKET);
+    handler.putResponse(gr);
+  }
+
+  private void message(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    String msg = ( (CommandMessage) ge).message();
+    int tid = ( (CommandMessage) ge).getTableId();
+    Presence p = pp.presence(tid);
+    _cat.warn(pp);
+    deliverMessageResponse(com.golconda.game.Game.handle(new MessagingImpl(tid,
+        p, msg)));
+  }
+
+  private void preferences(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    int pref = ( (CommandInt) ge).getIntVal();
+    pp.getDBPlayer().setPreferences(pref);
+  }
+
+  private void chargeCard(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    String card_number = ( (CommandChargeCard) ge).getCardNumber();
+    String userid = ( (CommandChargeCard) ge).getUserName();
+    double amount = ( (CommandChargeCard) ge).getAmount();
+    DBCard dbc = new DBCard();
+    dbc.setUserId(userid);
+    dbc.setCardNo(card_number);
+    dbc.setAmount(amount);
+    com.golconda.common.message.Response gr = null;
+    if (dbc.save() == -1) {
+      gr = new com.golconda.common.message.Response(com.golconda.common.message.
+          Response.FAILURE,
+          com.golconda.common.message.Response.
+          R_CARD);
+    }
+    else {
+      gr = new com.golconda.common.message.Response(com.golconda.common.message.
+          Response.SUCCESS,
+          com.golconda.common.message.Response.
+          R_CARD);
+
+    }
+    _cat.debug(gr);
+    handler.putResponse(gr);
+  }
+
+  private void move(Command ge, Handler handler) throws Exception {
+    GamePlayer pp = (GamePlayer) handler.attachment();
+    if (pp == null) {
+      return;
+    }
+    com.golconda.common.message.Response gr = null;
+    if (!pp.isAuthenticated()) {
+      // authenticate the client first
+      gr = new com.golconda.common.message.Response(com.golconda.common.message.
+          Response.
+          AUTHENTICATE,
+          com.golconda.common.message.Response.
+          R_MOVE);
+      // set the game response in the clients out queue
+      handler.putResponse(gr);
+    }
+    int move = ( (CommandMove) ge).getMove();
+    int tid = ( (CommandMove) ge).getTableId();
+    double amt = ( (CommandMove) ge).getMoveAmount();
+    int pos = ( (CommandMove) ge).getPlayerPosition();
+
+    assert pos >= 0:"Postion = " + pos;
+    Presence p = pp.presence(tid);
+    assert p != null:"For game move presence cannot be null " + pp;
+
+    switch (move) {
+      /**
+       * MOVE JOIN
+       **/
+      case Command.M_SIT_IN:
+
+        //create a db game player
+        // call game server to add this player
+        double minBet = 0;
+        if (Game.game(tid) instanceof SitnGoInterface) {
+          SitnGoInterface sng = (SitnGoInterface) Game.game(tid);
+          minBet = sng.buyIn();
+        }
+        else if (Game.game(tid) instanceof Poker) {
+          Poker pg = (Poker) Game.game(tid);
+          minBet = pg.minBet() * 10;
+        }
+
+        if (amt < minBet) {
+          _cat.fatal(p.worth() + " Worth less than min required " + minBet);
+          new com.golconda.common.message.ResponseInt(com.golconda.common.
+              message.
+              Response.BROKE,
+              com.golconda.common.message.Response.
+              R_MOVE, tid);
+          // set the game response in the clients out queue
+          handler.putResponse(gr);
+        }
+        else {
+          handler.putResponse(new ResponseBuyChips(1,
+              pp.playWorth(),
+              pp.getDBPlayer().
+              getPlayBankroll(),
+              pp.realWorth(),
+              pp.getDBPlayer().
+              getRealBankroll()));
+          deliverResponse(pp.addGame(p, pos, amt));
+        }
+
+        break;
+        /**
+         * MOVE ANTE
+         **/
+        //
+      case Command.M_ANTE:
+        assert amt > 0
+        :"ANTE: Illegal value received from the client " + amt;
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.ANTE, amt)));
+
+        break;
+        /**
+         * MOVE BRINGIN
+         **/
+        //
+      case Command.M_BRING_IN:
+        assert amt > 0
+        :"BRING IN: Illegal value received from the client " + amt;
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.BRINGIN, amt)));
+
+        break;
+
+        /**
+         * MOVE BIG BLIND
+         **/
+        //
+      case Command.M_BIGBLIND:
+        assert amt > 0
+        :"BIGBLIND: Illegal value received from the client " + amt;
+
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.BIG_BLIND, amt)));
+        break;
+        /**
+         * MOVE SMALL BLIND
+         ***/
+        //
+      case Command.M_SMALLBLIND:
+        assert amt > 0
+        :"SMALLBLIND: Illegal value received from the client " + amt;
+
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.SMALL_BLIND, amt)));
+        break;
+        /**
+         * MOVE SMALL BIG
+         ***/
+        //
+      case Command.M_SBBB:
+        assert amt > 0
+        :"POST SB&BB: Illegal value received from the client " + amt;
+
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.SBBB, amt)));
+        break;
+
+        /**
+         * MOVE BET
+         ***/
+        //
+      case Command.M_BET:
+        assert amt > 0
+        :"BET: Illegal value received from the client " + amt;
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.BET, amt)));
+        break;
+        /**
+         * MOVE RAISE
+         ***/
+        //
+      case Command.M_RAISE:
+
+        assert amt > 0
+        :"RAISE: Illegal value received from the client";
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.RAISE, amt)));
+
+        break;
+        /**
+         * MOVE FOLD
+         ***/
+        //
+      case Command.M_FOLD:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.FOLD, amt)));
+        break;
+        /**
+         * MOVE ALL IN
+         ***/
+        //
+      case Command.M_ALL_IN:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.ALL_IN, amt)));
+
+        break; /**
+        * MOVE OPT OUT
+        ****/
+       //
+      case Command.M_OPT_OUT:
+
+        //create a db game player
+        // call game server to add this player
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.OPT_OUT, amt)));
+        break;
+        /**
+         * MOVE RAISE
+         ***/
+        //
+      case Command.M_CHECK:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.CHECK, amt)));
+        break;
+        /**
+         * MOVE SEE/CALL
+         ***/
+        //
+      case Command.M_CALL:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.CALL, amt)));
+        break;
+
+        /**
+         * MOVE LEAVE
+         ***/
+        //
+      case Command.M_LEAVE:
+        pp.leaveGame(p); // no need to send response as the player has already left the game
+        handler.putResponse(new ResponseBuyChips(1,
+                                                 pp.playWorth(),
+                                                 pp.getDBPlayer().
+                                                 getPlayBankroll(),
+                                                 pp.realWorth(),
+                                                 pp.getDBPlayer().
+                                                 getRealBankroll()));
+
+        _cat.debug("Removed from game " + p);
+        break;
+
+        //
+        /**
+         * BLACK JACK MOVES
+         *
+         */
+
+      case Command.M_BJ_ANTE:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.BJ_ANTE, amt)));
+        break;
+      case Command.M_HIT:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.HIT, amt)));
+        break;
+      case Command.M_STAND:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.STAND, amt)));
+        break;
+      case Command.M_SURRENDER:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.SURRENDER, amt)));
+        break;
+      case Command.M_INSURANCE:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.INSURANCE, amt)));
+        break;
+      case Command.M_DOUBLE_DOWN:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.DOUBLE_DOWN, amt)));
+        break;
+      case Command.M_SPLIT:
+        deliverResponse(com.golconda.game.Game.handle(new MoveImpl(tid,
+            p, Moves.SPLIT, amt)));
+        break;
+
+      default:
+
+        //unknown move
+        // send a failure
+        gr = new com.golconda.common.message.Response(com.golconda.common.
+            message.Response.
+            FAILURE,
+            com.golconda.common.message.Response.
+            R_MOVE);
+        _cat.warn("Unknown move " + ge);
+        // set the game response in the clients out queue
+        handler.putResponse(gr);
+    }
+  }
+
+  /*
+   Stop signals to suspend all runs of the game, till such time resume is called.
+     If a run is in progress, the run is completed.
+     Utility method, available at class level.
+   */
+  public static synchronized void suspendAll() {
+    Game[] games = Game.listAll();
+    for (int i = 0; i < games.length; i++) {
+      suspend(games[i].id());
+    }
+  }
+
+  /*
+    A previously suspended game can run now.
+    Utility method at class level
+   */
+  public static synchronized void resumeAll() throws IOException {
+    Game[] games = Game.listAll();
+    for (int i = 0; i < games.length; i++) {
+      resume(games[i].id());
+    }
+  }
+
+  public static void suspend(int id) {
+    Game.game(id).suspend();
+  }
+
+  public static void resume(int id) throws IOException {
+    com.golconda.game.resp.Response r = Game.game(id).resume();
+    //deliver the response to all players
+    com.golconda.server.GameProcessor.deliverResponse(r);
+  }
+
+  public static synchronized void destroyAll() throws IOException {
+    Game[] games = Game.listAll();
+    for (int i = 0; i < games.length; i++) {
+      destroy(games[i].id());
+    }
+  }
+
+  public static void destroy(int id) {
+    // destroy happens for poker game
+    Game g = Game.game(id);
+    if (g instanceof com.golconda.game.poker.Poker) {
+      com.golconda.game.poker.Poker p = (com.golconda.game.poker.Poker) g;
+      // inform each player that game is going to be destroyed
+      Response r = new Response(Response.STOPPING_GAME, Response.R_ADMIN);
+      Presence[] pp = p.allPlayers(0);
+      for (int i = 0; i < pp.length; i++) {
+        if (pp[i].player() instanceof GamePlayer) {
+          GamePlayer gp = (GamePlayer) pp[i].player();
+          gp.deliver(r);
+          _cat.debug("Delivering destroy " + r + " to player " + gp);
+          gp.kill();
+        }
+      }
+      Game.game(id).destroy();
+    }
+  }
+
+  public static void broadcast(String message) {
+    Iterator enum = Handler.registry().values().iterator();
+    for (; enum.hasNext(); ) {
+      Handler h = (Handler) enum.next();
+      StringBuffer sbuf = new StringBuffer("type=broadcast").append(",message=").
+          append(message);
+      ResponseMessage rm = new ResponseMessage(1, sbuf.toString());
+      rm.session(h._id);
+      h.write(rm);
+    }
+  }
+
+  public static void broadcast(int gid, String message) throws IOException {
+    deliverMessageResponse(com.golconda.game.Game.handle(new MessagingImpl(gid, null,
+        message)));
+  }
+
+} // end Poker Processor
